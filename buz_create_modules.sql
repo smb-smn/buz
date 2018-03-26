@@ -1,23 +1,16 @@
 ﻿--
 -- Скрипт сгенерирован Devart dbForge Studio for Oracle, Версия 3.6.389.0
 -- Домашняя страница продукта: http://www.devart.com/ru/dbforge/oracle/studio
--- Дата скрипта: 10.03.2018 22:34:36
+-- Дата скрипта: 26.03.2018 20:27:48
 -- Версия сервера: Oracle Database 11g Express Edition Release 11.2.0.2.0 - Production
 -- Версия клиента: 
 --
 
 
-CREATE OR REPLACE TYPE BUZ.SYS_PLSQL_20061_DUMMY_1 AS
-TABLE OF NUMBER;
-/
-
-CREATE OR REPLACE TYPE BUZ.SYS_PLSQL_20061_39_1 AS
-TABLE OF BUZ.SYS_PLSQL_20061_9_1;
-/
-
 CREATE OR REPLACE PACKAGE BUZ.monthly_income_pkg
   AS
   --20180127 created
+  --20180326 добавлен расчет нетто-профита
   --20180203 добавлена пайплайн ф-я для возврата записей аналогично хп
   TYPE income_rt IS RECORD (
       period monthly_income.period % TYPE,
@@ -258,78 +251,61 @@ END fill_monthly_income_pkg;
 
 /
 
-CREATE OR REPLACE PROCEDURE BUZ.recalc_all(period_in IN SLD.PERIOD % TYPE)
-  --20180220 пересчёт всех нужных таблиц - запуск как по запросу
-  -- и после окончания ОП 
+CREATE OR REPLACE PACKAGE BUZ.GET_RTR_DATA_PKG
   AS
-  BEGIN
-    fill_ASSET_BALANCE_pkg.fill_ASSET_BALANCE(period_in, period_in);
-    fill_monthly_income_pkg.fill_monthly_income(period_in, period_in);
-    CALC_SLD_PKG.CALC_SLD(period_in);
-  END;
+
+END GET_RTR_DATA_PKG;
+
 /
 
-CREATE OR REPLACE PROCEDURE BUZ.contact_us
--- Create a wrapper procedure for apex_mail
---
-(p_from IN VARCHAR2,
- p_body IN VARCHAR2)
+CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
   AS
-  BEGIN
-    apex_mail.send(
-    p_from => p_from,
-    p_to => 'temp_mail@e1.ru',
-    p_subj => 'Message from the APEX Issue Tracker',
-    p_body => p_body,
-    p_body_html => p_body);
-  END contact_us;
-/
 
-CREATE OR REPLACE PACKAGE get_rtr_data_pkg AS
-TYPE twr_rt IS RECORD 
-    (t_date date 
-    , fy real 
-    , twr1 REAL
-    , twr2 REAL
-    , twr3 REAL
-    , twr_f real
-    );
-TYPE twr_tt is table of twr_rt;
+  FUNCTION get_fact_twr_pipe(d_start_in DATE,
+                             d_end_in   DATE)
+    RETURN twr_tt
+  PIPELINED
+    IS
+    BEGIN
+      FOR this_cursor IN (SELECT y.YIELD_DATE AS d,
+                                 y.fact_yield,
+                                 EXP(SUM(LN(1 + theor_YIELD_N1)) OVER (ORDER BY yield_date)) twr_n1,
+                                 EXP(SUM(LN(1 + theor_YIELD_N2)) OVER (ORDER BY yield_date)) twr_n2,
+                                 EXP(SUM(LN(1 + theor_YIELD_N3)) OVER (ORDER BY yield_date)) twr_n3,
+                                 EXP(SUM(LN(1 + FACT_YIELD)) OVER (ORDER BY yield_date)) twr_fact
+          --select *
+          FROM RTR_YIELD y
+          WHERE 1 = 1
+            AND y.YIELD_DATE BETWEEN d_start_in AND d_end_in)
+      LOOP
+        PIPE ROW (this_cursor);
+      ----тест функции---------------------------------------------------------
+      --select * from table(get_twr_pkg.get_daily_trades_pipe
+      --      (TO_DATE('20180101','yyyymmdd'), TO_DATE('20180201','yyyymmdd'),2));
+      ----/тест----------------------------------------------------------------
+      END LOOP;
 
-    function get_fact_twr_pipe (d_start_in DATE, d_end_in DATE)
-    return twr_tt
-    pipelined;
+    END GET_FACT_TWR_PIPE;
+
+  FUNCTION twr(d_start_in DATE,
+               d_end_in   DATE)
+    RETURN REAL
+    IS
+      retval REAL;
+    BEGIN
+      SELECT EXP(SUM(LN(1 + FACT_YIELD)))
+        INTO retval
+        FROM RTR_YIELD
+        WHERE 1 = 1
+          AND YIELD_DATE BETWEEN d_start_in AND d_end_in;
+      RETURN retval;
+    --тест ф-ии
+    --begin
+    --DBMS_OUTPUT.PUT_LINE( twr(TO_DATE('20180101','yyyymmdd'), TO_DATE('20180201','yyyymmdd')));
+    --END;
+
+    END twr;
 
 END get_rtr_data_pkg;
 
-CREATE OR REPLACE PACKAGE BODY get_rtr_data_pkg AS
-
- function get_fact_twr_pipe (d_start_in DATE, d_end_in DATE)
-    return twr_tt
-    pipelined
-IS
-begin
-for this_cursor in
-  (
-    SELECT 
-    y.YIELD_DATE AS d, y.fact_yield
-    ,EXP(SUM(LN(1+theor_YIELD_N1))over (order by yield_date) ) twr_n1
-    ,EXP(SUM(LN(1+theor_YIELD_N2))over (order by yield_date) ) twr_n2
-    ,EXP(SUM(LN(1+theor_YIELD_N3))over (order by yield_date) ) twr_n3 
-  , EXP(SUM(LN(1+FACT_YIELD)) over (order by yield_date) )twr_fact
-    --select *
-    from RTR_YIELD y
-    where 1 = 1
-    and y.YIELD_DATE BETWEEN d_start_in AND d_end_in
-  )
-loop
-pipe row (this_cursor);
---тест функции---------------------------------------------------------
-select * from table(get_rtr_data_pkg.get_fact_twr_pipe
-      (TO_DATE('20180101','yyyymmdd'), TO_DATE('20180401','yyyymmdd')));
---/тест----------------------------------------------------------------
-end loop;
-
-END GET_FACT_TWR_PIPE;
-
-END get_rtr_data_pkg;
+/
