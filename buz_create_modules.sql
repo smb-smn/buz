@@ -1,7 +1,7 @@
 ﻿--
 -- Скрипт сгенерирован Devart dbForge Studio for Oracle, Версия 3.6.389.0
 -- Домашняя страница продукта: http://www.devart.com/ru/dbforge/oracle/studio
--- Дата скрипта: 26.03.2018 20:27:48
+-- Дата скрипта: 31.03.2018 20:53:02
 -- Версия сервера: Oracle Database 11g Express Edition Release 11.2.0.2.0 - Production
 -- Версия клиента: 
 --
@@ -10,7 +10,6 @@
 CREATE OR REPLACE PACKAGE BUZ.monthly_income_pkg
   AS
   --20180127 created
-  --20180326 добавлен расчет нетто-профита
   --20180203 добавлена пайплайн ф-я для возврата записей аналогично хп
   TYPE income_rt IS RECORD (
       period monthly_income.period % TYPE,
@@ -251,10 +250,34 @@ END fill_monthly_income_pkg;
 
 /
 
-CREATE OR REPLACE PACKAGE BUZ.GET_RTR_DATA_PKG
+CREATE OR REPLACE PACKAGE BUZ.get_rtr_data_pkg
   AS
+  TYPE twr_rt IS RECORD (
+      t_date DATE,
+      fy     REAL,
+      twr1   REAL,
+      twr2   REAL,
+      twr3   REAL,
+      twr_f  REAL
+    );
+  TYPE twr_tt IS TABLE OF twr_rt;
 
-END GET_RTR_DATA_PKG;
+  FUNCTION get_fact_twr_pipe(d_start_in DATE,
+                             d_end_in   DATE)
+    RETURN twr_tt
+  PIPELINED;
+
+  FUNCTION twr(d_start_in DATE,
+               d_end_in   DATE)
+    RETURN REAL;
+
+  FUNCTION profit(d_start_in     DATE,
+                  d_end_in       DATE,
+                  balance_in     REAL,
+                  proposal_id_in RTR_PROPOSAL.PROPOSAL_ID % TYPE)
+    RETURN REAL;
+
+END get_rtr_data_pkg;
 
 /
 
@@ -265,14 +288,15 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
                              d_end_in   DATE)
     RETURN twr_tt
   PIPELINED
+    --20180331 учтена возможность существования нулл-доходности
     IS
     BEGIN
       FOR this_cursor IN (SELECT y.YIELD_DATE AS d,
                                  y.fact_yield,
-                                 EXP(SUM(LN(1 + theor_YIELD_N1)) OVER (ORDER BY yield_date)) twr_n1,
-                                 EXP(SUM(LN(1 + theor_YIELD_N2)) OVER (ORDER BY yield_date)) twr_n2,
-                                 EXP(SUM(LN(1 + theor_YIELD_N3)) OVER (ORDER BY yield_date)) twr_n3,
-                                 EXP(SUM(LN(1 + FACT_YIELD)) OVER (ORDER BY yield_date)) twr_fact
+                                 EXP(SUM(LN(1 + COALESCE(theor_YIELD_N1, 0))) OVER (ORDER BY yield_date)) twr_n1,
+                                 EXP(SUM(LN(1 + COALESCE(theor_YIELD_N2, 0))) OVER (ORDER BY yield_date)) twr_n2,
+                                 EXP(SUM(LN(1 + COALESCE(theor_YIELD_N3, 0))) OVER (ORDER BY yield_date)) twr_n3,
+                                 EXP(SUM(LN(1 + COALESCE(FACT_YIELD, 0))) OVER (ORDER BY yield_date)) twr_fact
           --select *
           FROM RTR_YIELD y
           WHERE 1 = 1
@@ -280,8 +304,8 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
       LOOP
         PIPE ROW (this_cursor);
       ----тест функции---------------------------------------------------------
-      --select * from table(get_twr_pkg.get_daily_trades_pipe
-      --      (TO_DATE('20180101','yyyymmdd'), TO_DATE('20180201','yyyymmdd'),2));
+      --select * from table(BUZ.get_rtr_data_pkg.get_fact_twr_pipe
+      --      (TO_DATE('20180301','yyyymmdd'), TO_DATE('20180401','yyyymmdd')));
       ----/тест----------------------------------------------------------------
       END LOOP;
 
@@ -289,22 +313,103 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
 
   FUNCTION twr(d_start_in DATE,
                d_end_in   DATE)
+
     RETURN REAL
+    --20180331 учтена возможность существования нулл-доходности
     IS
       retval REAL;
     BEGIN
-      SELECT EXP(SUM(LN(1 + FACT_YIELD)))
+      SELECT EXP(SUM(LN(1 + COALESCE(FACT_YIELD, 0))))
         INTO retval
         FROM RTR_YIELD
         WHERE 1 = 1
           AND YIELD_DATE BETWEEN d_start_in AND d_end_in;
       RETURN retval;
-    --тест ф-ии
+    ----тест ф-ии
     --begin
-    --DBMS_OUTPUT.PUT_LINE( twr(TO_DATE('20180101','yyyymmdd'), TO_DATE('20180201','yyyymmdd')));
+    --DBMS_OUTPUT.PUT_LINE(get_rtr_data_pkg.twr(TO_DATE('20180101','yyyymmdd'), TO_DATE('20180401','yyyymmdd')));
     --END;
 
     END twr;
+
+  FUNCTION profit(d_start_in     DATE,
+                  d_end_in       DATE,
+                  balance_in     REAL,
+                  proposal_id_in RTR_PROPOSAL.PROPOSAL_ID % TYPE)
+    RETURN REAL
+    --
+    IS
+      retval    REAL;
+      balance0  REAL;
+      balance_  REAL;
+      fee_      REAL;
+      equity    REAL;
+      twr_      REAL;
+      i         INT;
+      d1        DATE;
+      d2        DATE;
+      interval_ RTR_PROPOSAL.INTERVAL_MONTH % TYPE;
+
+    BEGIN
+      --2DO убрать лишнюю переменную balance0
+      i := 1;
+      balance0 := balance_in;
+      d1 := d_start_in;
+      d2 := d_start_in;
+      equity := balance_in;
+      balance_ := balance_in;
+      SELECT MAX(INTERVAL_MONTH)
+        INTO interval_
+        FROM RTR_PROPOSAL
+        WHERE proposal_id = proposal_id_in;
+      SELECT p.FEE / 100
+        INTO fee_
+        FROM RTR_PROPOSAL p
+        WHERE 1 = 1
+          AND proposal_id = proposal_id_in
+          AND p.BALANCE = (SELECT MIN(BALANCE)
+              FROM RTR_PROPOSAL p2
+              WHERE p2.BALANCE >= equity);
+
+      --  DBMS_OUTPUT.PUT_LINE('fee='||fee_||' interval='|| interval_);
+
+      WHILE (ADD_MONTHS(d_start_in, i * interval_) < d_end_in)
+        LOOP
+          d2 := ADD_MONTHS(d_start_in, i * interval_) - 1 * 24;
+          twr_ := twr(d1, d2);
+          equity := equity * twr_; --средства без учета фии
+
+          DBMS_OUTPUT.PUT_LINE('twr_=' || twr_ || ' equity=' || equity);
+
+          --IF twr_ > 1 AND THEN 
+          IF equity - balance_ > 0
+          THEN --есть прирост средств за расчетный период
+            equity := equity - (equity - balance_) * fee_; --учли фии
+            balance_ := equity;
+            SELECT p.FEE / 100
+              INTO fee_ --поиск значения фии для следующего периода
+              FROM RTR_PROPOSAL p
+              WHERE 1 = 1
+                AND p.BALANCE = (SELECT MIN(BALANCE)
+                    FROM RTR_PROPOSAL p2
+                    WHERE p2.BALANCE >= balance_);
+          END IF;
+          i := i + 1;
+        END LOOP;
+      d1 := d2;
+      d2 := d_end_in - 1 * 24;
+      twr_ := twr(d1, d2);
+      equity := equity * twr_;
+      IF equity - balance_ > 0
+      THEN --есть прирост средств за расчетный период
+        equity := equity - (equity - balance_) * fee_;
+      END IF;
+
+      DBMS_OUTPUT.PUT_LINE('twr_=' || twr_ || ' equity=' || equity);
+
+      retval := equity - balance_in;
+      RETURN retval;
+    END PROFIT;
 
 END get_rtr_data_pkg;
 
