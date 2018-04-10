@@ -1,7 +1,7 @@
 ﻿--
 -- Скрипт сгенерирован Devart dbForge Studio for Oracle, Версия 3.6.389.0
 -- Домашняя страница продукта: http://www.devart.com/ru/dbforge/oracle/studio
--- Дата скрипта: 31.03.2018 20:53:02
+-- Дата скрипта: 10.04.2018 19:21:34
 -- Версия сервера: Oracle Database 11g Express Edition Release 11.2.0.2.0 - Production
 -- Версия клиента: 
 --
@@ -261,6 +261,15 @@ CREATE OR REPLACE PACKAGE BUZ.get_rtr_data_pkg
       twr_f  REAL
     );
   TYPE twr_tt IS TABLE OF twr_rt;
+  TYPE drawdown_rt IS RECORD (
+      dd_date  DATE,
+      dd_value REAL
+    );
+
+  FUNCTION max_drawdown(d_start_in  DATE,
+                        d_end_in    DATE,
+                        twr_type_in INT)
+    RETURN drawdown_rt;
 
   FUNCTION get_fact_twr_pipe(d_start_in DATE,
                              d_end_in   DATE)
@@ -288,6 +297,7 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
                              d_end_in   DATE)
     RETURN twr_tt
   PIPELINED
+    --20180410 добавлена ф-я получения макс дродауна за выбр.период
     --20180331 учтена возможность существования нулл-доходности
     IS
     BEGIN
@@ -303,13 +313,70 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
             AND y.YIELD_DATE BETWEEN d_start_in AND d_end_in)
       LOOP
         PIPE ROW (this_cursor);
-      ----тест функции---------------------------------------------------------
+      --тест функции---------------------------------------------------------
       --select * from table(BUZ.get_rtr_data_pkg.get_fact_twr_pipe
       --      (TO_DATE('20180301','yyyymmdd'), TO_DATE('20180401','yyyymmdd')));
-      ----/тест----------------------------------------------------------------
+      --/тест----------------------------------------------------------------
       END LOOP;
 
     END GET_FACT_TWR_PIPE;
+
+
+  FUNCTION max_drawdown(d_start_in  DATE,
+                        d_end_in    DATE,
+                        twr_type_in INT)
+    RETURN drawdown_rt
+    --20180410 возврат даты и значения макс. дродауна за выбранный период для выбранного 1-го из 4-х временного ряда
+    IS
+      CURSOR twr_cur IS
+          SELECT t_date,
+                 CASE twr_type_in WHEN 0 THEN twr_f WHEN 1 THEN twr1 WHEN 2 THEN twr2 WHEN 3 THEN twr3 END twr
+            FROM TABLE (BUZ.get_rtr_data_pkg.get_fact_twr_pipe(d_start_in, d_end_in));
+      twr_rec      twr_cur % ROWTYPE;
+      drawdown_rec drawdown_rt;
+      max_eq       NUMBER;
+      max_dd       NUMBER;
+      dd           NUMBER;
+      dd_date      DATE;
+      retval       NUMBER;
+
+    BEGIN
+      max_eq := 1;
+      max_dd := 0;
+      OPEN twr_cur;
+      LOOP
+        FETCH twr_cur INTO twr_rec;
+        EXIT WHEN twr_cur % NOTFOUND;
+
+        IF max_eq < twr_rec.twr
+        THEN
+          max_eq := twr_rec.twr;
+        ELSE
+          DD := (twr_rec.twr - max_Eq) / max_Eq;
+        END IF;
+        IF max_dd > dd
+        THEN
+          max_DD := dd;
+          dd_date := twr_rec.t_date;
+        END IF;
+
+      END LOOP;
+      CLOSE twr_cur;
+      drawdown_rec.dd_value := -1 * max_dd;
+      drawdown_rec.dd_date := dd_date;
+      --DBMS_OUTPUT.PUT_LINE(DD_date || '  dd= ' ||drawdown_rec.dd_value);
+      RETURN drawdown_rec;
+      --тест функции---------------------------------------------------------
+      --select BUZ.get_rtr_data_pkg.max_drawdown
+      --      (TO_DATE('20180301','yyyymmdd'), TO_DATE('20180401','yyyymmdd'),0).dd_date from dual;
+      BEGIN
+        DBMS_OUTPUT.PUT_LINE(BUZ.get_rtr_data_pkg.max_drawdown
+        (TO_DATE('20180301', 'yyyymmdd'), TO_DATE('20180320', 'yyyymmdd'), 0).dd_date);
+        DBMS_OUTPUT.PUT_LINE(BUZ.get_rtr_data_pkg.max_drawdown
+        (TO_DATE('20180301', 'yyyymmdd'), TO_DATE('20180320', 'yyyymmdd'), 0).dd_value);
+      END;
+    --/тест--
+    END;
 
   FUNCTION twr(d_start_in DATE,
                d_end_in   DATE)
@@ -413,4 +480,51 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
 
 END get_rtr_data_pkg;
 
+/
+
+CREATE OR REPLACE FUNCTION BUZ.max_dd_standalone(
+  d_start_in DATE, d_end_in DATE
+  --,twr_x VARCHAR(20)
+  , twr_type_in int) 
+ RETURN NUMBER
+  --RETURN twr_rec
+  AS CURSOR twr_cur is
+  select t_date
+  ,case twr_type_in
+  when 0 then twr_f when 1 then twr1 when 2 then twr2 when 3 then twr3 end twr
+  from  table(BUZ.get_rtr_data_pkg.get_fact_twr_pipe(d_start_in, d_end_in) ) ;
+  twr_rec twr_cur%ROWTYPE;
+  max_eq NUMBER; max_dd NUMBER; dd NUMBER; dd_date DATE;
+  retval NUMBER;
+  --retval twr_cur%ROWTYPE;
+
+  BEGIN
+  max_eq:=1; max_dd:=0;
+  OPEN twr_cur;
+  LOOP
+  FETCH twr_cur INTO twr_rec;
+  EXIT WHEN twr_cur%NOTFOUND;
+
+      IF max_eq < twr_rec.twr THEN 
+        max_eq := twr_rec.twr;
+      else 
+        DD := (twr_rec.twr - max_Eq) / max_Eq;
+      END if;
+      IF max_dd > dd THEN
+        max_DD := dd;
+		    dd_date := twr_rec.t_date;
+      END IF;
+--    FETCH twr_cur INTO twr_rec;
+--  END IF; 
+  END LOOP;
+  CLOSE twr_cur;
+  retval := -1* max_dd;
+  DBMS_OUTPUT.PUT_LINE(DD_date || '  dd= ' ||retval);
+  --retval.twr :=-1* max_dd;retval.t_date := twr_rec.t_date;
+  RETURN retval;
+----тест функции---------------------------------------------------------
+--select BUZ.max_dd_standalone
+--      (TO_DATE('20180301','yyyymmdd'), TO_DATE('20180401','yyyymmdd'),0) from dual;
+----/тест--
+  END;
 /
