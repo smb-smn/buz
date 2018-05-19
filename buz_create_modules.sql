@@ -1,7 +1,7 @@
 ﻿--
 -- Скрипт сгенерирован Devart dbForge Studio for Oracle, Версия 3.6.389.0
 -- Домашняя страница продукта: http://www.devart.com/ru/dbforge/oracle/studio
--- Дата скрипта: 10.04.2018 19:21:34
+-- Дата скрипта: 19.05.2018 12:50:56
 -- Версия сервера: Oracle Database 11g Express Edition Release 11.2.0.2.0 - Production
 -- Версия клиента: 
 --
@@ -257,7 +257,7 @@ CREATE OR REPLACE PACKAGE BUZ.get_rtr_data_pkg
       fy     REAL,
       twr1   REAL,
       twr2   REAL,
-      twr3   REAL,
+      --twr3   REAL,
       twr_f  REAL
     );
   TYPE twr_tt IS TABLE OF twr_rt;
@@ -305,7 +305,7 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
                                  y.fact_yield,
                                  EXP(SUM(LN(1 + COALESCE(theor_YIELD_N1, 0))) OVER (ORDER BY yield_date)) twr_n1,
                                  EXP(SUM(LN(1 + COALESCE(theor_YIELD_N2, 0))) OVER (ORDER BY yield_date)) twr_n2,
-                                 EXP(SUM(LN(1 + COALESCE(theor_YIELD_N3, 0))) OVER (ORDER BY yield_date)) twr_n3,
+                                 -- EXP(SUM(LN(1 + COALESCE(theor_YIELD_N3, 0))) OVER (ORDER BY yield_date)) twr_n3,
                                  EXP(SUM(LN(1 + COALESCE(FACT_YIELD, 0))) OVER (ORDER BY yield_date)) twr_fact
           --select *
           FROM RTR_YIELD y
@@ -330,7 +330,7 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
     IS
       CURSOR twr_cur IS
           SELECT t_date,
-                 CASE twr_type_in WHEN 0 THEN twr_f WHEN 1 THEN twr1 WHEN 2 THEN twr2 WHEN 3 THEN twr3 END twr
+                 CASE twr_type_in WHEN 0 THEN twr_f WHEN 1 THEN twr1 WHEN 2 THEN twr2 /*WHEN 3 THEN twr3*/ END twr
             FROM TABLE (BUZ.get_rtr_data_pkg.get_fact_twr_pipe(d_start_in, d_end_in));
       twr_rec      twr_cur % ROWTYPE;
       drawdown_rec drawdown_rt;
@@ -480,6 +480,33 @@ CREATE OR REPLACE PACKAGE BODY BUZ.get_rtr_data_pkg
 
 END get_rtr_data_pkg;
 
+/
+
+CREATE OR REPLACE PROCEDURE BUZ.recalc_all(period_in IN SLD.PERIOD % TYPE)
+  --20180220 пересчёт всех нужных таблиц - запуск как по запросу
+  -- и после окончания ОП 
+  AS
+  BEGIN
+    fill_ASSET_BALANCE_pkg.fill_ASSET_BALANCE(period_in, period_in);
+    fill_monthly_income_pkg.fill_monthly_income(period_in, period_in);
+    CALC_SLD_PKG.CALC_SLD(period_in);
+  END;
+/
+
+CREATE OR REPLACE PROCEDURE BUZ.contact_us
+-- Create a wrapper procedure for apex_mail
+--
+(p_from IN VARCHAR2,
+ p_body IN VARCHAR2)
+  AS
+  BEGIN
+    apex_mail.send(
+    p_from => p_from,
+    p_to => 'temp_mail@e1.ru',
+    p_subj => 'Message from the APEX Issue Tracker',
+    p_body => p_body,
+    p_body_html => p_body);
+  END contact_us;
 /
 
 CREATE OR REPLACE FUNCTION BUZ.max_dd_standalone(
